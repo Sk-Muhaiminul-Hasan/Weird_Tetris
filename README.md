@@ -335,7 +335,8 @@ python3 main.py
 ## Quick Start
 
 ```bash
-cd /Users/muhaiminul/Documents/IUT_Codex/continental_drift
+git clone https://github.com/Sk-Muhaiminul-Hasan/Weird_Tetris.git
+cd Weird_Tetris
 python3 -m pip install pygame-ce psycopg[binary]
 python3 main.py
 ```
