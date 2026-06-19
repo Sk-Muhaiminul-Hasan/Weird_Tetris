@@ -1,3 +1,4 @@
+import math
 import os
 
 import pygame
@@ -44,6 +45,7 @@ entering_name = True
 score_saved = False
 db_ready = False
 db_status = "DB: not checked"
+float_time = 0.0
 
 
 def reset_game():
@@ -196,6 +198,55 @@ def draw_piece(piece, x, y):
         draw_cell(screen, x + px, y + py, piece.color)
 
 
+def draw_piece_floating(piece, x, y):
+    """Draw the active piece with a floating bob, drop shadow, and glow.
+    Shows a red tint when the current position is invalid (can't place there)."""
+    bob = int(math.sin(float_time * 2.8) * 5)  # ±5 px vertical bob
+    placeable = not playfield.is_colliding(x, y, piece.coords)
+
+    # Colour switches to red when hovering over an occupied / out-of-bounds cell
+    display_color = piece.color if placeable else (220, 60, 70)
+    cell_alpha = 255 if placeable else 150
+
+    for px, py in piece.coords:
+        sx, sy = grid_to_screen(x + px, y + py)
+        float_y = sy - bob
+
+        # --- Drop shadow (stays at grid position, doesn't bob) ---
+        shadow_alpha = 65 if placeable else 25
+        shadow_surf = pygame.Surface((CELL_SIZE - 2, CELL_SIZE - 2), pygame.SRCALPHA)
+        shadow_surf.fill((0, 0, 0, shadow_alpha))
+        screen.blit(shadow_surf, (sx + 4, sy + 6))
+
+        # --- Soft glow outline ---
+        glow_color = tuple(min(255, c + 55) for c in display_color)
+        glow_alpha = 45 if placeable else 90
+        glow_surf = pygame.Surface((CELL_SIZE + 6, CELL_SIZE + 6), pygame.SRCALPHA)
+        glow_surf.fill((*glow_color, glow_alpha))
+        screen.blit(glow_surf, (sx - 3, float_y - 3))
+
+        # --- Main cell body (bobbing, alpha-blended) ---
+        cell_surf = pygame.Surface((CELL_SIZE - 2, CELL_SIZE - 2), pygame.SRCALPHA)
+        cell_surf.fill((*display_color, cell_alpha))
+        screen.blit(cell_surf, (sx + 1, float_y + 1))
+
+        border_color = darken(display_color)
+        border_surf = pygame.Surface((CELL_SIZE - 2, CELL_SIZE - 2), pygame.SRCALPHA)
+        pygame.draw.rect(
+            border_surf,
+            (*border_color, cell_alpha),
+            pygame.Rect(0, 0, CELL_SIZE - 2, CELL_SIZE - 2),
+            1,
+        )
+        screen.blit(border_surf, (sx + 1, float_y + 1))
+
+        if placeable:
+            # Bright top-edge highlight for 3-D lifted look
+            highlight_color = tuple(min(255, c + 90) for c in piece.color)
+            highlight_rect = pygame.Rect(sx + 2, float_y + 2, CELL_SIZE - 4, 3)
+            pygame.draw.rect(screen, highlight_color, highlight_rect)
+
+
 def draw_walls():
     left = GRID_OFFSET_X + playfield.w_left * CELL_SIZE
     right = GRID_OFFSET_X + playfield.w_right * CELL_SIZE
@@ -253,7 +304,7 @@ def draw_everything():
     draw_grid_background()
     draw_placed_cells()
     if engine.game_active:
-        draw_piece(current_piece, piece_x, piece_y)
+        draw_piece_floating(current_piece, piece_x, piece_y)
     draw_walls()
     draw_hud()
     if not engine.game_active:
@@ -280,42 +331,50 @@ def candidate_positions(piece):
 
 
 def move_piece_to_spawn():
+    """Spawn the piece at the visual centre of the active playfield.
+    The player must deliberately navigate it to an empty slot to place it."""
     global piece_x, piece_y
-    positions = candidate_positions(current_piece)
-    if positions:
-        _, piece_x, piece_y = positions[0]
-    else:
-        engine.game_active = False
+    left = int(playfield.w_left)
+    right = int(playfield.w_right)
+    top = int(playfield.w_top)
+    bottom = int(playfield.w_bottom)
+    piece_x = (left + right) // 2
+    piece_y = (top + bottom) // 2
 
 
 def keep_piece_valid():
-    if playfield.is_colliding(piece_x, piece_y, current_piece.coords):
-        engine.game_active = False
+    """Floating over occupied/wall cells is intentionally allowed.
+    Only placed cells touching shrinking walls end the game."""
+    pass  # game-over is handled exclusively by check_wall_touch_game_over
 
 
 def check_wall_touch_game_over():
-    if playfield.occupied_touches_walls() or playfield.piece_touches_walls(
-        piece_x, piece_y, current_piece.coords
-    ):
+    """Game over only when already-placed cells are crushed by the shrinking walls.
+    The floating piece can hover anywhere without ending the game."""
+    if playfield.occupied_touches_walls():
         engine.game_active = False
 
 
 def try_move_piece(dx, dy):
+    """Move freely — no collision block so the piece is never stranded on top of
+    another block. Placement collision is checked separately in lock_piece."""
     global piece_x, piece_y
     next_x = piece_x + dx
     next_y = piece_y + dy
-    if not playfield.is_colliding(next_x, next_y, current_piece.coords):
+    # Only clamp to outer grid bounds so the piece stays on-screen
+    if 0 <= next_x < playfield.size and 0 <= next_y < playfield.size:
         piece_x = next_x
         piece_y = next_y
 
 
 def try_move_piece_to_grid(gx, gy):
+    """Always follow the cursor — collision is only checked at placement (lock_piece).
+    This prevents the piece from freezing at a 'last valid' spot that the player
+    can exploit by spamming Enter."""
     global piece_x, piece_y
-    if not playfield.is_colliding(gx, gy, current_piece.coords):
-        piece_x = gx
-        piece_y = gy
-        return True
-    return False
+    piece_x = gx
+    piece_y = gy
+    return True
 
 
 def cycle_current_piece():
@@ -414,6 +473,7 @@ def handle_input(event):
 
 
 def main():
+    global float_time
     init_database()
     reset_game()
     running = True
@@ -425,6 +485,7 @@ def main():
                 running = False
 
         if engine.game_active and not entering_name:
+            float_time += dt
             engine.process_level_behavior(playfield, dt)
             keep_piece_valid()
             check_wall_touch_game_over()
